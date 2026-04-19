@@ -1,41 +1,46 @@
 (function () {
   'use strict';
 
-  const API = 'https://lampac.ga/';
-  const CACHE_TIME = 1000 * 60 * 5; // 5 минут
+  // ===== CONFIG =====
+  const APIS = [
+    'https://lampac.ga/',
+    'https://lampac.su/',
+    'https://bwa-cloud.apn.monster/',
+    'https://api.vokino.tv/'
+  ];
+
+  const CACHE_TIME = 1000 * 60 * 5;
 
   const cache = {};
 
-  function request(url, callback, error) {
-    // ⚡ КЭШ
-    if (cache[url] && (Date.now() - cache[url].time < CACHE_TIME)) {
-      return callback(cache[url].data);
+  // ===== REQUEST =====
+  function request(url, ok, err) {
+    if (cache[url] && Date.now() - cache[url].time < CACHE_TIME) {
+      return ok(cache[url].data);
     }
 
     const net = new Lampa.Reguest();
 
     net.native(url, (data) => {
-      cache[url] = {
-        time: Date.now(),
-        data: data
-      };
-      callback(data);
-    }, error || function(){});
+      cache[url] = { time: Date.now(), data };
+      ok(data);
+    }, err || function(){});
   }
 
-  function parse(html, selector) {
+  // ===== PARSE =====
+  function parse(html) {
     try {
       const root = $('<div>' + html + '</div>');
       const items = [];
 
-      root.find(selector).each(function () {
+      root.find('.videos__item').each(function () {
         const el = $(this);
-        const json = JSON.parse(el.attr('data-json') || '{}');
+        const data = JSON.parse(el.attr('data-json') || '{}');
 
-        json.title = el.text();
-        json.active = el.hasClass('active');
+        data.title = el.text();
+        data.active = el.hasClass('active');
 
-        items.push(json);
+        items.push(data);
       });
 
       return items;
@@ -44,8 +49,8 @@
     }
   }
 
-  // 🚫 АНТИ-РЕКЛАМА (жёсткий фильтр)
-  function cleanItems(items) {
+  // ===== ANTIBLOCK =====
+  function clean(items) {
     return items.filter(i => {
       if (!i) return false;
 
@@ -57,51 +62,68 @@
         !bad.includes('advert') &&
         !bad.includes('promo') &&
         !bad.includes('banner') &&
-        !bad.includes('vast')
+        !bad.includes('vast') &&
+        !bad.includes('vip')
       );
     });
   }
 
-  // ⚡ ПАРАЛЛЕЛЬНЫЙ ВЫБОР ЛУЧШЕГО ИСТОЧНИКА
-  function getBestSource(sources, done) {
+  // ===== LOAD SOURCES =====
+  function loadSources(done) {
     let finished = false;
 
-    sources.slice(0, 3).forEach((src) => { // максимум 3
-      request(src.url, (html) => {
-        if (finished) return;
+    APIS.forEach(api => {
+      request(api + 'lite/events', (sources) => {
+        if (finished || !sources || !sources.length) return;
 
-        const items = cleanItems(parse(html, '.videos__item'));
+        finished = true;
+        done(sources);
+      });
+    });
+
+    setTimeout(() => {
+      if (!finished) done([]);
+    }, 3000);
+  }
+
+  // ===== BEST SOURCE =====
+  function bestSource(sources, done) {
+    let doneFlag = false;
+
+    sources.slice(0, 3).forEach(src => {
+      request(src.url, (html) => {
+        if (doneFlag) return;
+
+        const items = clean(parse(html));
 
         if (items.length) {
-          finished = true;
-          done(src, items);
+          doneFlag = true;
+          done(items);
         }
       });
     });
 
-    // fallback
     setTimeout(() => {
-      if (!finished && sources.length) {
+      if (!doneFlag && sources.length) {
         request(sources[0].url, (html) => {
-          const items = cleanItems(parse(html, '.videos__item'));
-          done(sources[0], items);
+          done(clean(parse(html)));
         });
       }
     }, 2000);
   }
 
+  // ===== PLAY =====
   function play(item) {
     if (item.method === 'play') {
       Lampa.Player.play(item);
     } else {
-      request(item.url, function (json) {
+      request(item.url, (json) => {
         if (!json || !json.url) return;
 
-        // 🚫 убираем VAST
+        // remove ads
         delete json.vast;
 
-        // 🚫 защита от рекламных редиректов
-        if (json.url && json.url.includes('ads')) return;
+        if (json.url.includes('ads')) return;
 
         Lampa.Player.play({
           url: json.url,
@@ -112,6 +134,7 @@
     }
   }
 
+  // ===== COMPONENT =====
   function component(object) {
     const scroll = new Lampa.Scroll({ mask: true, over: true });
 
@@ -124,30 +147,25 @@
     };
 
     this.load = function () {
-      request(API + 'lite/events', (sources) => {
+      loadSources((sources) => {
 
-        if (!sources || !sources.length) {
-          return this.empty();
-        }
+        if (!sources.length) return this.empty();
 
-        // ⚡ выбираем лучший источник
-        getBestSource(sources, (src, items) => {
+        bestSource(sources, (items) => {
 
-          if (!items.length) {
-            return this.empty();
-          }
+          if (!items.length) return this.empty();
 
           this.renderItems(items);
 
         });
 
-      }, this.empty.bind(this));
+      });
     };
 
     this.renderItems = function (items) {
       scroll.clear();
 
-      items.forEach((item) => {
+      items.forEach(item => {
         const el = $('<div class="simple-item">' + item.title + '</div>');
 
         el.on('hover:enter', () => play(item));
@@ -165,5 +183,7 @@
     };
   }
 
-  Lampa.Component.add('online_fast_clean', component);
+  // ===== INIT =====
+  Lampa.Component.add('online_ultra_clean', component);
+
 })();
