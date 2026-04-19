@@ -1,33 +1,13 @@
 (function () {
   'use strict';
 
-  // ===== CONFIG =====
-  const APIS = [
-    'https://lampac.ga/',
-    'https://lampac.su/',
-    'https://bwa-cloud.apn.monster/',
-    'https://api.vokino.tv/'
-  ];
+  const API = 'https://lampac.ga/'; // можно менять
 
-  const CACHE_TIME = 1000 * 60 * 5;
-
-  const cache = {};
-
-  // ===== REQUEST =====
   function request(url, ok, err) {
-    if (cache[url] && Date.now() - cache[url].time < CACHE_TIME) {
-      return ok(cache[url].data);
-    }
-
     const net = new Lampa.Reguest();
-
-    net.native(url, (data) => {
-      cache[url] = { time: Date.now(), data };
-      ok(data);
-    }, err || function(){});
+    net.native(url, ok, err || function(){});
   }
 
-  // ===== PARSE =====
   function parse(html) {
     try {
       const root = $('<div>' + html + '</div>');
@@ -49,92 +29,37 @@
     }
   }
 
-  // ===== ANTIBLOCK =====
   function clean(items) {
     return items.filter(i => {
-      if (!i) return false;
-
       const bad = JSON.stringify(i).toLowerCase();
 
       return (
         (i.method === 'play' || i.method === 'call') &&
         !bad.includes('ads') &&
-        !bad.includes('advert') &&
         !bad.includes('promo') &&
-        !bad.includes('banner') &&
-        !bad.includes('vast') &&
-        !bad.includes('vip')
+        !bad.includes('vast')
       );
     });
   }
 
-  // ===== LOAD SOURCES =====
-  function loadSources(done) {
-    let finished = false;
-
-    APIS.forEach(api => {
-      request(api + 'lite/events', (sources) => {
-        if (finished || !sources || !sources.length) return;
-
-        finished = true;
-        done(sources);
-      });
-    });
-
-    setTimeout(() => {
-      if (!finished) done([]);
-    }, 3000);
-  }
-
-  // ===== BEST SOURCE =====
-  function bestSource(sources, done) {
-    let doneFlag = false;
-
-    sources.slice(0, 3).forEach(src => {
-      request(src.url, (html) => {
-        if (doneFlag) return;
-
-        const items = clean(parse(html));
-
-        if (items.length) {
-          doneFlag = true;
-          done(items);
-        }
-      });
-    });
-
-    setTimeout(() => {
-      if (!doneFlag && sources.length) {
-        request(sources[0].url, (html) => {
-          done(clean(parse(html)));
-        });
-      }
-    }, 2000);
-  }
-
-  // ===== PLAY =====
   function play(item) {
     if (item.method === 'play') {
       Lampa.Player.play(item);
     } else {
-      request(item.url, (json) => {
+      request(item.url, function (json) {
         if (!json || !json.url) return;
 
-        // remove ads
         delete json.vast;
-
-        if (json.url.includes('ads')) return;
 
         Lampa.Player.play({
           url: json.url,
           title: item.title,
-          quality: json.quality || item.quality
+          quality: json.quality
         });
       });
     }
   }
 
-  // ===== COMPONENT =====
   function component(object) {
     const scroll = new Lampa.Scroll({ mask: true, over: true });
 
@@ -147,25 +72,33 @@
     };
 
     this.load = function () {
-      loadSources((sources) => {
+      request(API + 'lite/events', (sources) => {
 
-        if (!sources.length) return this.empty();
+        if (!sources || !sources.length) {
+          return this.empty();
+        }
 
-        bestSource(sources, (items) => {
+        const source = sources[0].url;
 
-          if (!items.length) return this.empty();
+        request(source, (html) => {
+
+          let items = clean(parse(html));
+
+          if (!items.length) {
+            return this.empty();
+          }
 
           this.renderItems(items);
 
-        });
+        }, this.empty.bind(this));
 
-      });
+      }, this.empty.bind(this));
     };
 
     this.renderItems = function (items) {
       scroll.clear();
 
-      items.forEach(item => {
+      items.forEach((item) => {
         const el = $('<div class="simple-item">' + item.title + '</div>');
 
         el.on('hover:enter', () => play(item));
@@ -178,12 +111,12 @@
 
     this.empty = function () {
       scroll.body().html(
-        '<div style="padding:2em;text-align:center;">Нет видео</div>'
+        '<div style="padding:2em;text-align:center;">Нет фильмов</div>'
       );
     };
   }
 
-  // ===== INIT =====
-  Lampa.Component.add('online_ultra_clean', component);
+  // 👉 Регистрируем плагин
+  Lampa.Component.add('my_movies_plugin', component);
 
 })();
