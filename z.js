@@ -1,161 +1,157 @@
 (function () {
-  'use strict';
+    'use strict';
 
-  // ===== CONFIG =====
-  const APIS = [
-    'https://lampac.ga/',
-    'https://lampac.su/',
-    'https://bwa-cloud.apn.monster/',
-    'https://api.vokino.tv/'
-  ];
+    // Уникальное имя компонента и базовый URL
+    var plugin_name = 'NoodleParser';
+    var base_url = 'https://hot.noodlemagazine.com';
 
-  const CACHE_TIME = 1000 * 60 * 5;
+    // 1. Создаем новый компонент Lampa
+    Lampa.Component.add(plugin_name, function () {
+        var network = new Lampa.Network();
+        var scroll = new Lampa.Scroll({ mask: true, over: true });
+        var items = [];
+        var html = $('<div></div>');
+        var body = $('<div class="category-full"></div>');
 
-  const cache = {};
+        // Вызывается при открытии компонента
+        this.create = function () {
+            this.activity.loader(true);
+            
+            // Запрашиваем HTML главной страницы сайта
+            network.request(base_url, this.parse.bind(this), this.error.bind(this), false, {
+                dataType: 'text'
+            });
+            return this.render();
+        };
 
-  // ===== REQUEST =====
-  function request(url, ok, err) {
-  }
+        // Парсинг полученного HTML
+        this.parse = function (data) {
+            var parser = new DOMParser();
+            var doc = parser.parseFromString(data, 'text/html');
+            var parsedItems = [];
 
-  // ===== PARSE =====
-  function parse(html) {
-  }
+            // ВАЖНО: Замени селекторы на актуальные классы с сайта
+            // Обычно это контейнеры с видео, например .video-item или .thumb
+            var elements = doc.querySelectorAll('.item'); 
+            
+            elements.forEach(function(el) {
+                var titleEl = el.querySelector('.title');
+                var imgEl = el.querySelector('img');
+                var linkEl = el.querySelector('a');
 
-  // ===== ANTIBLOCK =====
-  function clean(items) {
-    return items.filter(i => {
-      if (!i) return false;
+                if (titleEl && linkEl) {
+                    var img_src = imgEl ? (imgEl.getAttribute('data-src') || imgEl.getAttribute('src')) : '';
+                    var link_href = linkEl.getAttribute('href');
+                    
+                    parsedItems.push({
+                        title: titleEl.innerText || titleEl.textContent,
+                        picture: img_src.startsWith('http') ? img_src : base_url + img_src,
+                        url: link_href.startsWith('http') ? link_href : base_url + link_href,
+                        is_folder: false
+                    });
+                }
+            });
 
-      const bad = JSON.stringify(i).toLowerCase();
+            if (parsedItems.length === 0) {
+                this.empty();
+            } else {
+                this.build(parsedItems);
+            }
+        };
 
-      return (
-        (i.method === 'play' || i.method === 'call') &&
-        !bad.includes('ads') &&
-        !bad.includes('advert') &&
-        !bad.includes('promo') &&
-        !bad.includes('banner') &&
-        !bad.includes('vast') &&
-        !bad.includes('vip')
-      );
+        // Построение сетки карточек
+        this.build = function (data) {
+            this.activity.loader(false);
+            var _this = this;
+            
+            data.forEach(function (element) {
+                // Создаем стандартную карточку Lampa
+                var card = Lampa.Template.get('card', element);
+                card.on('hover:enter', function () {
+                    _this.play(element);
+                });
+                body.append(card);
+                items.push(card);
+            });
+            
+            html.append(scroll.render());
+            scroll.append(body);
+            this.layer = html;
+        };
+
+        // Логика запуска видео
+        this.play = function (element) {
+            Lampa.Loading.start(function () {});
+            
+            // Запрашиваем страницу самого видео по ссылке из карточки
+            network.request(element.url, function(html_page) {
+                Lampa.Loading.stop();
+                
+                // ВАЖНО: Регулярное выражение для поиска прямой ссылки на видео.
+                // Возможно, на сайте используется iframe, тогда нужно парсить его src и делать еще один запрос.
+                // Данный Regex ищет стандартный тег <source src="...mp4"> или JSON с ссылкой.
+                var match = html_page.match(/(https?:\/\/[^"']+\.(?:mp4|m3u8)[^"']*)/i);
+                
+                if (match && match[1]) {
+                    var video_url = match[1];
+                    var player_data = {
+                        title: element.title,
+                        url: video_url
+                    };
+                    
+                    Lampa.Player.play(player_data);
+                    Lampa.Player.playlist([player_data]);
+                } else {
+                    Lampa.Noty.show('Не удалось найти прямую ссылку на видео');
+                }
+            }, function() {
+                Lampa.Loading.stop();
+                Lampa.Noty.show('Ошибка загрузки страницы видео');
+            }, false, { dataType: 'text' });
+        };
+
+        this.empty = function() {
+            this.activity.loader(false);
+            html.append('<div class="empty">Ничего не найдено. Проверьте селекторы парсера.</div>');
+        };
+
+        this.error = function () {
+            this.activity.loader(false);
+            Lampa.Noty.show('Ошибка соединения с сайтом');
+        };
+
+        this.render = function () {
+            return html;
+        };
     });
-  }
 
-  // ===== LOAD SOURCES =====
-  function loadSources(done) {
-    let finished = false;
-
-    APIS.forEach(api => {
-      request(api + 'lite/events', (sources) => {
-        if (finished || !sources || !sources.length) return;
-
-        finished = true;
-        done(sources);
-      });
-    });
-
-    setTimeout(() => {
-      if (!finished) done([]);
-    }, 3000);
-  }
-
-  // ===== BEST SOURCE =====
-  function bestSource(sources, done) {
-    let doneFlag = false;
-
-    sources.slice(0, 3).forEach(src => {
-      request(src.url, (html) => {
-        if (doneFlag) return;
-
-        const items = clean(parse(html));
-
-        if (items.length) {
-          doneFlag = true;
-          done(items);
-        }
-      });
-    });
-
-    setTimeout(() => {
-      if (!doneFlag && sources.length) {
-        request(sources[0].url, (html) => {
-          done(clean(parse(html)));
-        });
-      }
-    }, 2000);
-  }
-
-  // ===== PLAY =====
-  function play(item) {
-    if (item.method === 'play') {
-      Lampa.Player.play(item);
-    } else {
-      request(item.url, (json) => {
-        if (!json || !json.url) return;
-
-        // remove ads
-        delete json.vast;
-
-        if (json.url.includes('ads')) return;
-
-        Lampa.Player.play({
-          url: json.url,
-          title: item.title,
-          quality: json.quality || item.quality
-        });
-      });
+    // 2. Добавление кнопки в главное меню
+    function addMenu() {
+        var item = {
+            title: 'Hot Noodle',
+            icon: 'tv',
+            onSelect: function () {
+                Lampa.Activity.push({
+                    url: '',
+                    title: 'Hot Noodle',
+                    component: plugin_name,
+                    page: 1
+                });
+            }
+        };
+        // Добавляем в основной раздел меню
+        Lampa.Menu.add('main', item);
     }
-  }
 
-  // ===== COMPONENT =====
-  function component(object) {
-    const scroll = new Lampa.Scroll({ mask: true, over: true });
-
-    this.create = function () {
-      return this.render();
-    };
-
-    this.initialize = function () {
-      this.load();
-    };
-
-    this.load = function () {
-      loadSources((sources) => {
-
-        if (!sources.length) return this.empty();
-
-        bestSource(sources, (items) => {
-
-          if (!items.length) return this.empty();
-
-          this.renderItems(items);
-
+    // Инициализация плагина после загрузки приложения
+    if (window.appready) {
+        addMenu();
+    } else {
+        Lampa.Listener.follow('app', function (e) {
+            if (e.type == 'ready') {
+                addMenu();
+            }
         });
-
-      });
-    };
-
-    this.renderItems = function (items) {
-      scroll.clear();
-
-      items.forEach(item => {
-        const el = $('<div class="simple-item">' + item.title + '</div>');
-
-        el.on('hover:enter', () => play(item));
-
-        scroll.append(el);
-      });
-
-      Lampa.Controller.enable('content');
-    };
-
-    this.empty = function () {
-      scroll.body().html(
-        '<div style="padding:2em;text-align:center;">Нет видео</div>'
-      );
-    };
-  }
-
-  // ===== INIT =====
-  Lampa.Component.add('online_ultra_clean', component);
+    }
 
 })();
